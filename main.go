@@ -74,14 +74,16 @@ func (s *NodeState) Gossip(node *maelstrom.Node, body broadcastBody) {
 			continue
 		}
 
-		ctx, cancel := context.WithTimeout(context.Background(), time.Duration(5)*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), time.Duration(2)*time.Second)
 		defer cancel()
+		retriesFactor := 1
 		for {
 			_, err := node.SyncRPC(ctx, neighbor, request)
 			if err == nil {
 				break
 			}
-			time.Sleep(time.Duration(500) * time.Millisecond)
+			time.Sleep(time.Duration(100*retriesFactor) * time.Millisecond)
+			retriesFactor *= 2
 		}
 	}
 }
