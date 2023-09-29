@@ -1,9 +1,11 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"log"
 	"sync"
+	"time"
 
 	maelstrom "github.com/jepsen-io/maelstrom/demo/go"
 )
@@ -71,7 +73,16 @@ func (s *NodeState) Gossip(node *maelstrom.Node, body broadcastBody) {
 		if neighbor == body.Sender {
 			continue
 		}
-		node.Send(neighbor, request)
+
+		ctx, cancel := context.WithTimeout(context.Background(), time.Duration(5)*time.Second)
+		defer cancel()
+		for {
+			_, err := node.SyncRPC(ctx, neighbor, request)
+			if err == nil {
+				break
+			}
+			time.Sleep(time.Duration(500) * time.Millisecond)
+		}
 	}
 }
 
@@ -93,18 +104,16 @@ func main() {
 		}
 		body.Sender = request.Src
 
+		node.Reply(request, map[string]any{
+			"type": "broadcast_ok",
+		})
+
 		if ok := State.Messages.Broadcasted(body.Message); ok {
 			return nil
 		}
 
 		State.Messages.Append(body.Message)
 		State.Gossip(node, body)
-
-		if body.MessageID != 0 {
-			return node.Reply(request, map[string]any{
-				"type": "broadcast_ok",
-			})
-		}
 
 		return nil
 	})
@@ -135,6 +144,10 @@ func main() {
 		}
 
 		return node.Reply(msg, response)
+	})
+
+	node.Handle("broadcast_ok", func(msg maelstrom.Message) error {
+		return nil
 	})
 
 	if err := node.Run(); err != nil {
