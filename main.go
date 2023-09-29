@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"log"
+	"sync"
 
 	maelstrom "github.com/jepsen-io/maelstrom/demo/go"
 )
@@ -16,14 +17,51 @@ type broadcastBody struct {
 	Sender    string `json:"-"`
 }
 
+type MessageKeeper struct {
+	messages    []int64
+	broadcasted map[int64]Empty
+	mu          sync.RWMutex
+}
+
+func NewMessageKeeper() MessageKeeper {
+	return MessageKeeper{
+		messages:    []int64{},
+		broadcasted: make(map[int64]Empty),
+	}
+}
+
+func (m *MessageKeeper) Append(message int64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.messages = append(m.messages, message)
+}
+
+func (m *MessageKeeper) SetBroadcasted(message int64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.broadcasted[message] = Empty{}
+}
+
+func (m *MessageKeeper) Broadcasted(message int64) bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	_, ok := m.broadcasted[message]
+	return ok
+}
+
+func (m *MessageKeeper) All() []int64 {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.messages
+}
+
 type NodeState struct {
-	Messages    []int64
-	Broadcasted map[int64]Empty
-	Topology    map[string][]string
+	Messages MessageKeeper
+	Topology map[string][]string
 }
 
 func (s *NodeState) Gossip(node *maelstrom.Node, body broadcastBody) {
-	s.Broadcasted[body.Message] = Empty{}
+	s.Messages.SetBroadcasted(body.Message)
 	request := map[string]any{
 		"type":    "broadcast",
 		"message": body.Message,
@@ -39,8 +77,7 @@ func (s *NodeState) Gossip(node *maelstrom.Node, body broadcastBody) {
 
 func NewState() *NodeState {
 	return &NodeState{
-		Messages:    []int64{},
-		Broadcasted: make(map[int64]Empty, 0),
+		Messages: NewMessageKeeper(),
 	}
 }
 
@@ -56,11 +93,11 @@ func main() {
 		}
 		body.Sender = request.Src
 
-		if _, ok := State.Broadcasted[body.Message]; ok {
+		if ok := State.Messages.Broadcasted(body.Message); ok {
 			return nil
 		}
 
-		State.Messages = append(State.Messages, body.Message)
+		State.Messages.Append(body.Message)
 		State.Gossip(node, body)
 
 		if body.MessageID != 0 {
@@ -75,7 +112,7 @@ func main() {
 	node.Handle("read", func(msg maelstrom.Message) error {
 		response := map[string]any{
 			"type":     "read_ok",
-			"messages": State.Messages,
+			"messages": State.Messages.All(),
 		}
 
 		return node.Reply(msg, response)
